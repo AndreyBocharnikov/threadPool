@@ -1,3 +1,7 @@
+package ru.ifmo.rain.Bocharnikov.concurrent;
+
+import info.kgeorgiy.java.advanced.mapper.ParallelMapper;
+
 import java.util.*;
 import java.util.function.Function;
 
@@ -10,10 +14,9 @@ public class ParallelMapperImpl implements ParallelMapper {
 
     private final List<Thread> threads;
     private final TasksQueue tasks;
-    private List<Boolean> interuptMaps;
-    private List<Object> interupt;
+    private final List<Boolean> interuptMaps;
+    private final List<Object> interupt;
     volatile boolean closed;
-    final Integer synchronize;
 
     /**
      * Thread-count constructor.
@@ -23,7 +26,6 @@ public class ParallelMapperImpl implements ParallelMapper {
      * @param threadsNumber maximum count of operable threads
      */
     public ParallelMapperImpl(final int threadsNumber) {
-        synchronize = 42;
         tasks = new TasksQueue();
         interuptMaps = new ArrayList<>();
         interupt = new ArrayList<>();
@@ -130,7 +132,7 @@ public class ParallelMapperImpl implements ParallelMapper {
             id++;
             tasks.addTask(newTask);
         }
-        synchronized (synchronize) { // case чтобы старые мапы уже убиты и добавляются эти, они будут вечно wait'ить
+        synchronized (interuptMaps) {
             if (!closed) {
                 interuptMaps.add(task.closed);
                 interupt.add(task);
@@ -143,7 +145,7 @@ public class ParallelMapperImpl implements ParallelMapper {
     @Override
     public void close() {
         threads.forEach(Thread::interrupt);
-        synchronized (synchronize) {
+        synchronized (interuptMaps) {
             closed = true;
             for (int i = 0; i < interuptMaps.size(); i++) {
                 interuptMaps.set(i, true);
