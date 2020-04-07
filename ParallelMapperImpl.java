@@ -1,7 +1,3 @@
-package ru.ifmo.rain.Bocharnikov.concurrent;
-
-import info.kgeorgiy.java.advanced.mapper.ParallelMapper;
-
 import java.util.*;
 import java.util.function.Function;
 
@@ -14,9 +10,7 @@ public class ParallelMapperImpl implements ParallelMapper {
 
     private final List<Thread> threads;
     private final TasksQueue tasks;
-    private final List<Boolean> interuptMaps;
-    private final List<Object> interupt;
-    volatile boolean closed;
+    private volatile Boolean closed;
 
     /**
      * Thread-count constructor.
@@ -27,8 +21,6 @@ public class ParallelMapperImpl implements ParallelMapper {
      */
     public ParallelMapperImpl(final int threadsNumber) {
         tasks = new TasksQueue();
-        interuptMaps = new ArrayList<>();
-        interupt = new ArrayList<>();
         closed = false;
         final Runnable baseTask = () -> {
             try {
@@ -68,11 +60,11 @@ public class ParallelMapperImpl implements ParallelMapper {
         final List<T> result;
         RuntimeException exception;
         int resultDone;
-        volatile Boolean closed;
+        private volatile Boolean closed;
 
-        TaskWrapper(final int size) {
-            closed = false;
+        TaskWrapper(final int size, Boolean closeLink) {
             result = new ArrayList<>(Collections.nCopies(size, null));
+            closed = closeLink;
         }
 
         public synchronized void setResult(final int pos, final T value) {
@@ -118,44 +110,31 @@ public class ParallelMapperImpl implements ParallelMapper {
      */
     @Override
     public <T, R> List<R> map(final Function<? super T, ? extends R> f, final List<? extends T> args) throws InterruptedException {
-        final TaskWrapper<R> task = new TaskWrapper<>(args.size());
-        int id = 0;
+        if (closed) {
+            throw new InterruptedException("ParallelMapper is closed");
+        }
+
+        final TaskWrapper<R> task = new TaskWrapper<>(args.size(), closed);
+        int index = 0;
         for (final T arg : args) {
-            final int index = id;
-            final Runnable newTask = () -> {
+            final int indexFinal = index++;
+            tasks.addTask(() -> {
                 try {
-                    task.setResult(index, f.apply(arg));
+                    task.setResult(indexFinal, f.apply(arg));
                 } catch (final RuntimeException e) {
                     task.addException(e);
                 }
-            };
-            id++;
-            tasks.addTask(newTask);
-        }
-        synchronized (interuptMaps) {
-            if (!closed) {
-                interuptMaps.add(task.closed);
-                interupt.add(task);
-            }
+            });
         }
         return task.getResult();
     }
 
     /** Stops all threads. All unfinished mappings leave in undefined state. */
     @Override
-    public void close() {
+    public synchronized void close() {
         threads.forEach(Thread::interrupt);
-        synchronized (interuptMaps) {
-            closed = true;
-            for (int i = 0; i < interuptMaps.size(); i++) {
-                interuptMaps.set(i, true);
-            }
-            for (Object inter : interupt) {
-                synchronized (inter) {
-                    inter.notify();
-                }
-            }
-        }
+        closed = true;
+        notifyAll();
         for (final Thread thread : threads) {
             while (true) {
                 try {
@@ -167,3 +146,4 @@ public class ParallelMapperImpl implements ParallelMapper {
         }
     }
 }
+
