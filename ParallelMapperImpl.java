@@ -11,6 +11,7 @@ public class ParallelMapperImpl implements ParallelMapper {
     private final List<Thread> threads;
     private final TasksQueue tasks;
     private volatile Boolean closed;
+    final Set<TaskWrapper<?>> shutDown = new HashSet<>();
 
     /**
      * Thread-count constructor.
@@ -60,11 +61,12 @@ public class ParallelMapperImpl implements ParallelMapper {
         final List<T> result;
         RuntimeException exception;
         int resultDone;
-        private volatile Boolean closed;
+        private volatile boolean finished = false;
+        final private ParallelMapperImpl mainTask;
 
-        TaskWrapper(final int size, Boolean closeLink) {
+        TaskWrapper(final int size, ParallelMapperImpl mainTask) {
             result = new ArrayList<>(Collections.nCopies(size, null));
-            closed = closeLink;
+            this.mainTask = mainTask;
         }
 
         public synchronized void setResult(final int pos, final T value) {
@@ -89,11 +91,15 @@ public class ParallelMapperImpl implements ParallelMapper {
         }
 
         public synchronized List<T> getResult() throws InterruptedException {
-            while (resultDone != result.size() && !closed) {
+            synchronized (mainTask) {
+                mainTask.shutDown.add(this);
+            }
+            while (resultDone != result.size()) {
                 wait();
             }
-            if (closed) {
-                throw new InterruptedException("Some maps were running, but close was called");
+            finished = true;
+            synchronized (mainTask) {
+                mainTask.shutDown.remove(this);
             }
             if (exception != null) {
                 throw exception;
@@ -114,7 +120,8 @@ public class ParallelMapperImpl implements ParallelMapper {
             throw new InterruptedException("ParallelMapper is closed");
         }
 
-        final TaskWrapper<R> task = new TaskWrapper<>(args.size(), closed);
+        final TaskWrapper<R> task = new TaskWrapper<>(args.size(), this);
+
         int index = 0;
         for (final T arg : args) {
             final int indexFinal = index++;
@@ -133,8 +140,13 @@ public class ParallelMapperImpl implements ParallelMapper {
     @Override
     public synchronized void close() {
         threads.forEach(Thread::interrupt);
-        closed = true;
-        notifyAll();
+        for (TaskWrapper<?> subTask : shutDown) {
+            synchronized (subTask) {
+                if (!subTask.finished) {
+                    subTask.notify();
+                }
+            }
+        }
         for (final Thread thread : threads) {
             while (true) {
                 try {
