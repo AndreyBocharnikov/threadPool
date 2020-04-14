@@ -8,9 +8,9 @@ import java.util.function.Function;
 
 public class ParallelMapperImpl implements ParallelMapper {
 
-    private final List<Thread> threads;
-    private final TasksQueue tasks;
-    private volatile Boolean closed;
+    private final List<Thread> threads = new ArrayList<>();
+    private final TasksQueue tasks = new TasksQueue();
+    private volatile boolean closed;
     final Set<TaskWrapper<?>> shutDown = new HashSet<>();
 
     /**
@@ -21,8 +21,6 @@ public class ParallelMapperImpl implements ParallelMapper {
      * @param threadsNumber maximum count of operable threads
      */
     public ParallelMapperImpl(final int threadsNumber) {
-        tasks = new TasksQueue();
-        closed = false;
         final Runnable baseTask = () -> {
             try {
                 while (!Thread.interrupted()) {
@@ -34,7 +32,6 @@ public class ParallelMapperImpl implements ParallelMapper {
             }
         };
 
-        threads = new ArrayList<>();
         for (int i = 0; i < threadsNumber; i++) {
             threads.add(new Thread(baseTask));
         }
@@ -61,10 +58,10 @@ public class ParallelMapperImpl implements ParallelMapper {
         final List<T> result;
         RuntimeException exception;
         int resultDone;
-        private volatile boolean finished = false;
-        final private ParallelMapperImpl mainTask;
+        private boolean terminated = false;
+        private final ParallelMapperImpl mainTask;
 
-        TaskWrapper(final int size, ParallelMapperImpl mainTask) {
+        TaskWrapper(final int size, final ParallelMapperImpl mainTask) {
             result = new ArrayList<>(Collections.nCopies(size, null));
             this.mainTask = mainTask;
         }
@@ -91,20 +88,23 @@ public class ParallelMapperImpl implements ParallelMapper {
         }
 
         public synchronized List<T> getResult() throws InterruptedException {
-            synchronized (mainTask) {
-                mainTask.shutDown.add(this);
-            }
-            while (resultDone != result.size()) {
+            while (resultDone != result.size() && !terminated) {
                 wait();
             }
-            finished = true;
-            synchronized (mainTask) {
-                mainTask.shutDown.remove(this);
+            if (!terminated) {
+                synchronized (mainTask) {
+                    mainTask.shutDown.remove(this);
+                }
             }
             if (exception != null) {
                 throw exception;
             }
             return result;
+        }
+
+        private synchronized void terminate() {
+            terminated = true;
+            notify();
         }
     }
 
@@ -119,9 +119,7 @@ public class ParallelMapperImpl implements ParallelMapper {
         if (closed) {
             throw new InterruptedException("ParallelMapper is closed");
         }
-
         final TaskWrapper<R> task = new TaskWrapper<>(args.size(), this);
-
         int index = 0;
         for (final T arg : args) {
             final int indexFinal = index++;
@@ -133,20 +131,18 @@ public class ParallelMapperImpl implements ParallelMapper {
                 }
             });
         }
+        synchronized (this) {
+            shutDown.add(task);
+        }
         return task.getResult();
     }
 
     /** Stops all threads. All unfinished mappings leave in undefined state. */
     @Override
     public synchronized void close() {
+        closed = true;
         threads.forEach(Thread::interrupt);
-        for (TaskWrapper<?> subTask : shutDown) {
-            synchronized (subTask) {
-                if (!subTask.finished) {
-                    subTask.notify();
-                }
-            }
-        }
+        shutDown.forEach(TaskWrapper::terminate);
         for (final Thread thread : threads) {
             while (true) {
                 try {
